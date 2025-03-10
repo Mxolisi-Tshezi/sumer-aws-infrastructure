@@ -1,0 +1,682 @@
+AWSTemplateFormatVersion: "2010-09-09"
+################################################################################
+#
+#   DESCRIPTION
+#
+################################################################################
+Description: >-
+  This CloudFormation template creates an RDS instance with the MariaDB engine.
+  If the pEnvironment parameter is set to beta or prod, the RDS instance is 
+  created as a mulit-AZ deployment with performance insights enabled. The admin
+  user's password is managed by AWS Secrets Manager.
+
+  The template also creates an Amazon Elastic File System in the same subnets
+  as the database. Mounting the File System can be done by reading in the SSM 
+  Parameter /{pManagedResourcePrefix}/{pProject}/{pEnvironment}/efs-access-point
+################################################################################
+#
+#   PARAMETERS
+#
+################################################################################
+Parameters:
+  pAvailability:
+    Type: String
+    Description: >-
+      An identifier for the specific data availability level a resource
+      supports. A loss of availability is the loss of access to or use of a
+      workload.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+  pConfidentiality:
+    Type: String
+    Description: >-
+      An identifier for the specific data confidentiality level a resource
+      supports. A loss of confidentiality is the disclosure of information to
+      actors who are not authorized to access the information.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+  pCostCenter:
+    Type: String
+    Description: >-
+      Identify the cost centre or business unit associated with a resource
+    AllowedValues:
+      - BU001
+      - BU002
+    Default: BU002
+  pCustomer:
+    Type: String
+    Description: >-
+      Identify a specific client that a particular group of resources serves.
+    MaxLength: 256
+    Default: sumer
+  pEnvironment:
+    Type: String
+    Description: Distinguish between development, test, and production resources.
+    AllowedValues:
+      - dev
+      - qa
+      - prod
+      - sbx
+      - uat
+    Default: sbx
+  pIntegrity:
+    Type: String
+    Description: >-
+      An identifier for the specific data integrity level a resource supports.
+      A loss of integrity is the modification or destruction of information by
+      actors who are not authorized to modify or destroy the information.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+  pLayer:
+    Type: String
+    Default: database
+    Description: Identify a specific application layer of the resources
+    AllowedValues:
+      - api
+      - database
+      - network
+      - pipeline
+      - presentation
+  pOwner:
+    Type: String
+    Description: >-
+      Identifies who is responsible for the resource. Identify the human being
+      who is responsible for the resource, this should be an email address.
+    AllowedPattern: '[^@]+@[^@]+\.[^@]+'
+    ConstraintDescription: The owner should be an email address
+    Default: mxolisi@mxolisi-tshezi.com
+  pProject:
+    Type: String
+    Description: >-
+      Identify projects that the resource supports. this should always be
+      lowercase. Any whitespace in the project name should be removed. Do not
+      use hyphens or underscores to separate words in the project name.
+    Default: sumer
+  pVersion:
+    Type: String
+    Description: >-
+      Help distinguish between versions of resources or applications. Increment
+      the major, minor or patch number given a version number MAJOR.MINOR.PATCH.
+    Default: 1.0.0
+  pManagedResourcePrefix:
+    Type: String
+    Description: "Prefix for the managed resources"
+    Default: sumer
+    AllowedValues:
+      - sumer
+  pBackupRetentionPeriod:
+    Description: The number of days for which automated backups are retained.
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+
+  pDBAllocatedStorage:
+    Default: 50
+    Description: The size of the database (GiB)
+    Type: Number
+    MinValue: 20
+    MaxValue: 65536
+    ConstraintDescription: Must be between 20 and 65536 GiB.
+  pDBInstanceClass:
+    Description: >-
+      The compute and memory capacity of the DB instance, for example, db.m4.large. 
+      Not all DB instance classes are available in all AWS Regions, or for all database engines.
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.m5.12xlarge
+      - db.m5.16xlarge
+      - db.m5.24xlarge
+      - db.m5.2xlarge
+      - db.m5.4xlarge
+      - db.m5.8xlarge
+      - db.m5.large
+      - db.m5.xlarge
+      - db.m6i.12xlarge
+      - db.m6i.16xlarge
+      - db.m6i.24xlarge
+      - db.m6i.2xlarge
+      - db.m6i.32xlarge
+      - db.m6i.4xlarge
+      - db.m6i.8xlarge
+      - db.m6i.large
+      - db.m6i.xlarge
+      - db.r5.12xlarge
+      - db.r5.16xlarge
+      - db.r5.24xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r5.8xlarge
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r6i.12xlarge
+      - db.r6i.16xlarge
+      - db.r6i.24xlarge
+      - db.r6i.2xlarge
+      - db.r6i.32xlarge
+      - db.r6i.4xlarge
+      - db.r6i.8xlarge
+      - db.r6i.large
+      - db.r6i.xlarge
+      - db.t3.2xlarge
+      - db.t3.large
+      - db.t3.medium
+      - db.t3.micro
+      - db.t3.small
+      - db.t4g.micro
+      - db.t4g.small
+  pEngineVersion:
+    Description: The version number of the database engine to use
+    Type: String
+    AllowedValues:
+      - 5.7.37
+      - 5.7.38
+      - 5.7.39
+      - 5.7.40
+      - 5.7.41
+      - 5.7.42
+      - 5.7.43
+      - 8.0.28
+      - 8.0.30
+      - 8.0.31
+      - 8.0.32
+      - 8.0.33
+      - 8.0.34
+      - 8.0.35
+      - 8.0.36
+    Default: 8.0.36
+  pLogRetentionDays:
+    Description: >-
+      The number of days to retain the log events in the log group
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 3653
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+  pMonitoringInterval:
+    Description: >-
+      The interval, in seconds, between points when Enhanced Monitoring 
+      metrics are collected for the DB instance.
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 0
+      - 1
+      - 5
+      - 10
+      - 15
+      - 30
+      - 60
+  pMaxAllocatedStorage:
+    Description: >-
+      The upper limit in gibibytes (GiB) to which Amazon RDS can automatically scale 
+      the storage of the DB instance.
+    Type: Number
+    Default: 100
+################################################################################
+#
+#   METADATA
+#
+################################################################################
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Database
+        Parameters:
+          - pDBAllocatedStorage
+          - pDBInstanceClass
+          - pMonitoringInterval
+          - pMaxAllocatedStorage
+          - pBackupRetentionPeriod
+          - pEngineVersion
+      - Label:
+          default: Cost Management
+        Parameters:
+          - pCostCenter
+          - pCustomer
+      - Label:
+          default: Monitoring
+        Parameters:
+          - pLogRetentionDays
+      - Label:
+          default: Operations
+        Parameters:
+          - pEnvironment
+          - pLayer
+          - pOwner
+          - pProject
+          - pVersion
+          - pManagedResourcePrefix
+      - Label:
+          default: Security
+        Parameters:
+          - pAvailability
+          - pConfidentiality
+          - pIntegrity
+      - Label:
+          default: Storage
+    ParameterLabels:
+      pAvailability:
+        default: Availability
+      pConfidentiality:
+        default: Confidentiality
+      pCostCenter:
+        default: Cost Center
+      pCustomer:
+        default: Customer
+      pEnvironment:
+        default: Environment
+      pIntegrity:
+        default: Integrity
+      pLayer:
+        default: Layer
+      pOwner:
+        default: Owner
+      pProject:
+        default: Project Name
+      pVersion:
+        default: Version
+      pBackupRetentionPeriod:
+        default: Backup retention period in DAYS
+      pDBInstanceClass:
+        default: Database Instance Class
+      pDBAllocatedStorage:
+        default: Database Allocated Storage
+      pEngineVersion:
+        default: Database engine version
+      pLogRetentionDays:
+        default: Log retention in days
+      pManagedResourcePrefix:
+        default: Managed Resource Prefix
+      pMonitoringInterval:
+        default: Monitoring Interval
+      pMaxAllocatedStorage:
+        default: Maximum allocated storage
+################################################################################
+#
+#   CONDITIONS
+#
+################################################################################
+Conditions:
+  cDeployingToProduction:
+    !Or [!Equals [!Ref pEnvironment, prod], !Equals [!Ref pEnvironment, uat]]
+################################################################################
+#
+#   RESOURCES
+#
+################################################################################
+Resources:
+  rDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub ${pManagedResourcePrefix}-${pProject}-${pEnvironment}-db-subnet-group
+      DBSubnetGroupDescription: "Subnet group for RDS database"
+      SubnetIds:
+        - !Sub "{{resolve:ssm:/${pManagedResourcePrefix}/${pProject}/${pEnvironment}/data-subnet-a}}"
+        - !Sub "{{resolve:ssm:/${pManagedResourcePrefix}/${pProject}/${pEnvironment}/data-subnet-b}}"
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rDbSubnetGroupParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Database subnet group
+      Name: !Sub /${pManagedResourcePrefix}/${pProject}/${pEnvironment}/db-subnet-group
+      Type: String
+      Value: !Ref rDbSubnetGroup
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        CostCenter: !Ref pCostCenter
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rRdsMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - monitoring.rds.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rRdsInstanceKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub ${pProject} KMS key for encrypting the Amazon RDS instance
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Allow administration of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub "${AWS::AccountId}"
+            Action:
+              - "kms:*"
+            Resource:
+              - "*"
+      PendingWindowInDays: !Ref pLogRetentionDays
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pManagedResourcePrefix}-${pProject}-${pEnvironment}-db-kms-key
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  RdsInstanceKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${pManagedResourcePrefix}-${pProject}-${pEnvironment}-db-key
+      TargetKeyId: !Ref rRdsInstanceKey
+
+  rRdsInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: !Ref pDBAllocatedStorage
+      BackupRetentionPeriod: !Ref pBackupRetentionPeriod
+      DBInstanceClass: !Ref pDBInstanceClass
+      Engine: mysql
+      EngineVersion: !Ref pEngineVersion
+      EnablePerformanceInsights: !If [cDeployingToProduction, true, false] # If we are deploying to beta or prod, then enable performance insights
+      KmsKeyId: !Ref rRdsInstanceKey
+      ManageMasterUserPassword: true
+      MasterUsername: !Sub ${pManagedResourcePrefix}admin
+      MaxAllocatedStorage: !Ref pMaxAllocatedStorage
+      MonitoringInterval: !Ref pMonitoringInterval
+      MonitoringRoleArn: !GetAtt rRdsMonitoringRole.Arn
+      MultiAZ: !If [cDeployingToProduction, true, false] # If we are deploying to beta or prod, then make this a multi-AZ instance
+      DeletionProtection: !If [cDeployingToProduction, true, false] # If we are deploying to beta or prod, then enable Deletion Protection
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      VPCSecurityGroups:
+        - !Sub "{{resolve:ssm:/${pManagedResourcePrefix}/${pProject}/${pEnvironment}/db-sg}}"
+      DBSubnetGroupName: !Ref rDbSubnetGroup
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rRdsInstanceEndpointParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The connection endpoint for the database
+      Name: !Sub /${pManagedResourcePrefix}/${pProject}/${pEnvironment}/db-endpoint
+      Type: String
+      Value: !GetAtt rRdsInstance.Endpoint.Address
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        CostCenter: !Ref pCostCenter
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rRdsInstanceMasterUserSecretParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The Amazon Resource Name (ARN) of the secret for the database
+      Name: !Sub /${pManagedResourcePrefix}/${pProject}/${pEnvironment}/db-secret
+      Type: String
+      Value: !GetAtt rRdsInstance.MasterUserSecret.SecretArn
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        CostCenter: !Ref pCostCenter
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+
+  # S3 Bucket for storing images and static content
+  rStaticContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pManagedResourcePrefix}-${pProject}-${pEnvironment}-static-content
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  # Bucket policy to control access
+  rStaticContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rStaticContentBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${rStaticContentBucket}"
+              - !Sub "arn:aws:s3:::${rStaticContentBucket}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
+  # Store S3 bucket name in SSM Parameter Store for easy reference
+  rStaticContentBucketParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: S3 bucket for storing static content and images
+      Name: !Sub /${pManagedResourcePrefix}/${pProject}/${pEnvironment}/static-content-bucket
+      Type: String
+      Value: !Ref rStaticContentBucket
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        CostCenter: !Ref pCostCenter
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  # Store S3 bucket ARN in SSM Parameter Store
+  rStaticContentBucketArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: ARN of the S3 bucket for storing static content and images
+      Name: !Sub /${pManagedResourcePrefix}/${pProject}/${pEnvironment}/static-content-bucket-arn
+      Type: String
+      Value: !GetAtt rStaticContentBucket.Arn
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        CostCenter: !Ref pCostCenter
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+################################################################################
+#
+#   OUTPUTS
+#
+#################################################################################
+Outputs:
+  DatabaseInstanceName:
+    Description: Database instance name
+    Value: !Ref rRdsInstance
+  EndpointAddress:
+    Description: The connection endpoint for the database
+    Value: !GetAtt rRdsInstance.Endpoint.Address
+  EndpointPort:
+    Description: The port number on which the database accepts connections
+    Value: !GetAtt rRdsInstance.Endpoint.Port
+  MasterUserSecret:
+    Description: The Amazon Resource Name (ARN) of the secret
+    Value: !GetAtt rRdsInstance.MasterUserSecret.SecretArn
+  StaticContentBucketName:
+    Description: Name of the S3 bucket for static content and images
+    Value: !Ref rStaticContentBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-StaticContentBucket"
+
+  StaticContentBucketArn:
+    Description: ARN of the S3 bucket for static content and images
+    Value: !GetAtt rStaticContentBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-StaticContentBucketArn"

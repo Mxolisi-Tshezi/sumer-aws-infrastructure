@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS CloudFormation template to create a DB cluster and database instances required for Vayawallet APIs.
+
+Parameters:
+
+  pDBEncryptionKeyType:
+    Description: Please choose key type for DB encryption
+    Type: String
+    Default: Default-Key
+    AllowedValues:
+      - Unencrypted
+      - Default-Key
+      - Create-New-Key
+      - User-Provided-Key
+
+  pEncryptionKeyId:
+    Description: Provide encryption key id
+    Type: String
+
+  pDBUser:
+    NoEcho: 'true'
+    Description: The database admin account username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters.
+
+  pDBPort:
+    Description: Database port
+    Type: Number
+    Default: 3306
+    MinValue: 1025
+    MaxValue: 65535
+    ConstraintDescription: Must be a valid number between 1025-65535
+
+  pDBInstanceClass:
+    Description: The database instance type for Vayawallet API
+    Type: String
+    AllowedValues:
+      - db.t3.small
+      - db.t3.medium
+      - db.t3.large
+      - db.t4g.medium
+      - db.t4g.large
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r5.8xlarge
+      - db.r5.12xlarge
+      - db.r5.16xlarge
+      - db.r5.24xlarge
+      - db.r6g.xlarge
+      - db.r6g.2xlarge
+      - db.r6g.4xlarge
+      - db.r6g.8xlarge
+      - db.r6g.12xlarge
+      - db.r6g.16xlarge
+    ConstraintDescription: Must select a valid database instance type.
+
+  pDBEngineVersion:
+    Description: The database engine Version
+    Type: String
+    Default: 8.0
+
+  pProject:
+    Type: String
+    Description: Identify projects that the resource supports.
+
+  pClient:
+    Type: String
+    Description: Identify a specific client that a particular group of resources serves.
+
+  pOffering:
+    Type: String
+    Description: Distinguish between different offerings.
+    Default: wafr
+    AllowedValues:
+      - engineering
+      - wafr
+      - managedservices
+      - migration
+      - security
+
+  pLayer:
+    Type: String
+    Description: Identify a specific application layer of resources.
+    Default: database
+    AllowedValues:
+      - database
+      - presentation
+      - api
+      - network
+      - account
+
+  pNamePrefix:
+    Type: String
+    Description: A prefix to be added to the names of resources created by this template.
+    Default: vw
+
+  pEngineMode:
+    Type: String
+    Default: provisioned
+  
+  pDatabaseName:
+    Type: String
+    Description: A prefered database name.
+    Default: vayawallet_accounts_qa
+
+  pVpcId:
+    Type: String
+    Description: A vpc to deploy the db into
+    Default: vpc-02a55955ba6c6068a
+
+  pSubnetAId:
+    Type: String
+    Description: A private db subnet.
+    Default: subnet-0769dc490311a4133
+
+  pSubnetBId:
+    Type: String
+    Description: A private db subnet.
+    Default: subnet-0669695e43caeaaa1 
+
+  pEnvironment:
+    Type: String
+    Description: Environment type (dev, test, prod, beta)
+    AllowedValues:
+      - sbx
+      - dev
+      - test
+      - beta
+      - prod
+    Default: dev
+  
+  pRetentionPeriod:
+    Type: String
+    Description: Retention period in days (e.g 7 days)
+
+Conditions:
+  IsUnencrypted: !Equals
+    - !Ref pDBEncryptionKeyType
+    - Unencrypted
+  IsDefaultKey: !Equals
+    - !Ref pDBEncryptionKeyType
+    - Default-Key
+  IsUserProvidedKey: !Not
+    - !Equals
+      - !Ref pEncryptionKeyId
+      - ''
+  IsCreateNewKey: !Equals
+    - !Ref pDBEncryptionKeyType
+    - Create-New-Key
+  cDeployingToProduction:
+    !Or [!Equals [!Ref pEnvironment, prod], !Equals [!Ref pEnvironment, beta]]
+  cDeployMultiAZ: !Equals [!Ref pEnvironment, prod]
+
+Resources:
+  rDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      VpcId: !Ref pVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref pDBPort
+          ToPort: !Ref pDBPort
+          SourceSecurityGroupId: !Sub '{{resolve:ssm:/vw/vayawallet/dev/api-sg}}' # Allow inbound traffic from itself
+      SecurityGroupEgress:  # Explicitly allow all outbound traffic
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Client
+          Value: !Ref pClient
+        - Key: Offering
+          Value: !Ref pOffering
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-cluster
+        - Key: Environment
+          Value: !Ref pEnvironment
+
+  rDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets the database belongs to
+      SubnetIds:
+        - !Ref pSubnetAId
+        - !Ref pSubnetBId
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Client
+          Value: !Ref pClient
+        - Key: Offering
+
+          Value: !Ref pOffering
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbsubnetgroup
+        - Key: Environment
+          Value: !Ref pEnvironment
+
+  rKMSKey:
+    Type: AWS::KMS::Key
+    Condition: IsCreateNewKey
+    Properties:
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Sub key-${AWS::StackName}
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Join
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref AWS::AccountId
+                  - ':root'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:RevokeGrant
+              - kms:RetireGrant
+              - kms:ListAliases
+              - kms:CreateAlias
+              - kms:DeleteAlias
+            Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${AWS::StackName}-key'
+      EnableKeyRotation: true
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+
+  rMasterUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbsecrets
+      Description: Secret for the RDS master user
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+      KmsKeyId: !If
+        - IsCreateNewKey
+        - !Ref rKMSKey
+        - !If
+          - IsUserProvidedKey
+          - !Ref pEncryptionKeyId
+          - !If
+            - IsDefaultKey
+            - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Client
+          Value: !Ref pClient
+        - Key: Offering
+          Value: !Ref pOffering
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-masteruser
+        - Key: Environment
+          Value: !Ref pEnvironment
+
+
+  rRDSCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DatabaseName: !Sub ${pDatabaseName}
+      DBClusterIdentifier: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbcluser
+      BackupRetentionPeriod: !Ref pRetentionPeriod  # Set your desired retention period in days
+      CopyTagsToSnapshot: true
+      PreferredBackupWindow: 03:00-04:00
+      DBSubnetGroupName: !Ref rDBSubnetGroup
+      EnableCloudwatchLogsExports:
+        - error
+        - general
+        - slowquery
+      Engine: aurora-mysql
+      EngineMode: !Ref pEngineMode
+      EngineVersion: !Ref pDBEngineVersion
+      KmsKeyId: !If
+        - IsCreateNewKey
+        - !Ref rKMSKey
+        - !If
+          - IsUserProvidedKey
+          - !Ref pEncryptionKeyId
+          - !If
+            - IsDefaultKey
+            - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+      MasterUsername: !Ref pDBUser
+      ManageMasterUserPassword: true
+      MasterUserSecret:
+        SecretArn: !Ref rMasterUserSecret
+      Port: !Ref pDBPort
+      StorageEncrypted: true
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Client
+          Value: !Ref pClient
+        - Key: Offering
+          Value: !Ref pOffering
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbcluster
+        - Key: Environment
+          Value: !Ref pEnvironment
+      VpcSecurityGroupIds:
+        - !GetAtt rDBSecurityGroup.GroupId
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Retain
+
+  rDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref rRDSCluster
+      DBInstanceIdentifier: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbinstance
+      DBInstanceClass: !Ref pDBInstanceClass
+      EnablePerformanceInsights: !If [cDeployingToProduction, true, false] # If we are deploying to beta or prod, then enable performance insights
+      Engine: aurora-mysql
+      PubliclyAccessible: false
+      MultiAZ: !If [cDeployMultiAZ, true, false] # Conditionally enable Multi-AZ based on environment
+      DBSubnetGroupName: !Ref rDBSubnetGroup
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Client
+          Value: !Ref pClient
+        - Key: Offering
+          Value: !Ref pOffering
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-dbinstance
+        - Key: Environment
+          Value: !Ref pEnvironment
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Retain
+
+Outputs:
+  RDSClusterEndpoint:
+    Description: The endpoint of the RDS Cluster
+    Value: !GetAtt rRDSCluster.Endpoint.Address
+
+  RDSDatabaseName:
+    Description: Name of the RDS database
+    Value: !Ref rRDSCluster
+
+  RDSReadEndpoint:
+    Description: The read only endpoint of the RDS cluster
+    Value: !GetAtt rRDSCluster.ReadEndpoint.Address

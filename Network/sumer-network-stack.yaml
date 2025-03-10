@@ -1,0 +1,1276 @@
+AWSTemplateFormatVersion: "2010-09-09"
+################################################################################
+#
+#   DESCRIPTION
+#
+################################################################################
+Description: >-
+  This AWS CloudFormation template creates a 3-tier network (Amazon VPC). There 
+  are Public, Private and Data subnets for each tier of the workload. Security 
+  groups are created for compute resources to be accessible from a load 
+  balancer, and in turn access a database (Amazon RDS).
+################################################################################
+#
+#   PARAMETERS
+#
+################################################################################
+Parameters:
+  pAvailability:
+    Type: String
+    Description: >-
+      An identifier for the specific data availability level a resource
+      supports. A loss of availability is the loss of access to or use of a
+      workload.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+
+  pConfidentiality:
+    Type: String
+    Description: >-
+      An identifier for the specific data confidentiality level a resource
+      supports. A loss of confidentiality is the disclosure of information to
+      actors who are not authorized to access the information.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+
+  pCustomer:
+    Type: String
+    Description: >-
+      Identify a specific client that a particular group of resources serves.
+    MaxLength: 256
+    Default: Sumer
+
+  pEnvironment:
+    Type: String
+    Description: >-
+      Distinguish between sandbox, development, test, beta and production resources.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+      - sbx
+      - beta
+    Default: sbx
+
+  pIntegrity:
+    Type: String
+    Description: >-
+      An identifier for the specific data integrity level a resource supports.
+      A loss of integrity is the modification or destruction of information by
+      actors who are not authorized to modify or destroy the information.
+    AllowedValues:
+      - LOW
+      - MODERATE
+      - HIGH
+    Default: HIGH
+
+  pLayer:
+    Type: String
+    Default: network
+    Description: Identify a specific application layer of the resources
+    AllowedValues:
+      - api
+      - database
+      - network
+      - pipeline
+      - presentation
+
+  pOwner:
+    Type: String
+    Description: >-
+      Identifies who is responsible for the resource. Identify the human being
+      who is responsible for the resource, this should be an email address.
+    AllowedPattern: '[^@]+@[^@]+\.[^@]+'
+    ConstraintDescription: The owner should be an email address
+    Default: mxolisi@mxolisi-tshezi.com
+
+  pProject:
+    Type: String
+    Description: >-
+      Identify projects that the resource supports. this should always be
+      lowercase. Any whitespace in the project name should be removed. Do not
+      use hyphens or underscores to separate words in the project name.
+    Default: sumer
+
+  pVersion:
+    Type: String
+    Description: >-
+      Help distinguish between versions of resources or applications. Increment
+      the major, minor or patch number given a version number MAJOR.MINOR.PATCH.
+    Default: 1.0.0
+
+  pNamePrefix:
+    Type: String
+    Description: Prefix for the managed resources
+    Default: sumer
+
+  pVPCIPv4CidrBlock:
+    Type: String
+    Description: >-
+      The CIDR block for the VPC.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.0.0/16
+
+  pPublicSubnetACidr:
+    Type: String
+    Description: The CIDR block for the Public Subnet in Availabilty Zone A.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.0.0/24
+
+  pPublicSubnetBCidr:
+    Type: String
+    Description: The CIDR block for the Public Subnet in Availabilty Zone B.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.1.0/24
+
+  pPrivateSubnetACidr:
+    Type: String
+    Description: >-
+      The CIDR block for the Private Subnet in Availabilty Zone A.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.2.0/24
+
+  pPrivateSubnetBCidr:
+    Type: String
+    Description: >-
+      The CIDR block for the Private Subnet in Availabilty Zone B.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.3.0/24
+
+  pPataSubnetACidr:
+    Type: String
+    Description: >-
+      The CIDR block for the Data Subnet in Availabilty Zone A.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.4.0/24
+
+  pDataSubnetBCidr:
+    Type: String
+    Description: >-
+      The CIDR block for the Data Subnet in Availabilty Zone B.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.5.0/24
+
+  pDataSubnetCCidr:
+    Type: String
+    Description: >-
+      The CIDR block for the Data Subnet in Availabilty Zone C.
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.10.6.0/24
+
+  pApiPort:
+    Type: Number
+    Description: The TCP port used by API instances for incoming connnections
+    Default: 8080
+    MinValue: 1
+    MaxValue: 65535
+
+  pDatabasePort:
+    Type: Number
+    Description: The TCP port used by database instances for incoming connnections
+    Default: 3306
+    MinValue: 1
+    MaxValue: 65535
+
+  pLogRetentionDays:
+    Description: >-
+      The number of days to retain the log events in the log group
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 3653
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+################################################################################
+#
+#   METADATA
+#
+################################################################################
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Security
+        Parameters:
+          - pAvailability
+          - pConfidentiality
+          - pIntegrity
+      - Label:
+          default: Cost Management
+        Parameters:
+          - pCustomer
+      - Label:
+          default: Operations
+        Parameters:
+          - pNamePrefix
+          - pEnvironment
+          - pLayer
+          - pOwner
+          - pProject
+          - pVersion
+      - Label:
+          default: Monitoring
+        Parameters:
+          - pLogRetentionDays
+      - Label:
+          default: Network
+        Parameters:
+          - pVPCIPv4CidrBlock
+          - pPublicSubnetACidr
+          - pPrivateSubnetACidr
+          - pPublicSubnetBCidr
+          - pPrivateSubnetBCidr
+          - pPataSubnetACidr
+          - pDataSubnetBCidr
+          - pDataSubnetCCidr
+          - pDatabasePort
+          - pApiPort
+    ParameterLabels:
+      pAvailability:
+        default: Availability
+      pConfidentiality:
+        default: Confidentiality
+      pCostCenter:
+        default: Cost Center
+      pCustomer:
+        default: Customer
+      pEnvironment:
+        default: Environment
+      pIntegrity:
+        default: Integrity
+      pLayer:
+        default: Layer
+      pOwner:
+        default: Owner
+      pProject:
+        default: Project Name
+      pVersion:
+        default: Version
+      pNamePrefix:
+        default: Resource Prefix
+      pVPCIPv4CidrBlock:
+        default: VPC CIDR
+      pPublicSubnetACidr:
+        default: Public Subnet A
+      pPrivateSubnetACidr:
+        default: Private Subnet A
+      pPublicSubnetBCidr:
+        default: Public Subnet B
+      pPrivateSubnetBCidr:
+        default: Private Subnet B
+      pPataSubnetACidr:
+        default: Data Subnet A
+      pDataSubnetBCidr:
+        default: Data Subnet B
+      pDataSubnetCCidr:
+        default: Data Subnet C
+      pApiPort:
+        default: API listener port
+      pDatabasePort:
+        default: Database listener port
+      pLogRetentionDays:
+        default: Log retention in days
+################################################################################
+#
+#   RESOURCES
+#
+################################################################################
+Resources:
+  rVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVPCIPv4CidrBlock
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-vpc
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rVPCParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: VPC
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/vpc
+      Type: String
+      Value: !Ref rVpc
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-vpc
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rDefaultSecurityGroupParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Default Security Group
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/default-sg
+      Type: String
+      Value: !GetAtt rVpc.DefaultSecurityGroup
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-default-sg
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPublicAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for Application Load Balancer"
+      VpcId: !Ref rVpc
+      SecurityGroupIngress:
+        - Description: "HTTPS Ingress security group for Application Load Balancer"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "443"
+          ToPort: "443"
+        - Description: "HTTP Ingress security group for Application Load Balancer"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+      SecurityGroupEgress: # Allow outbound (egress) traffic
+        - Description: "HTTPS Engress security group for Application Load Balancer"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "443"
+          ToPort: "443"
+        - Description: "HTTP Engress security group for Application Load Balancer"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-sg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPublicAccessSecurityGroupParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Public access security group
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/public-sg
+      Type: String
+      Value: !Ref rPublicAccessSecurityGroup
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for API instances"
+      VpcId: !Ref rVpc
+      SecurityGroupIngress:
+        - Description: "Ingress security group for API instances"
+          SourceSecurityGroupId: !Ref rPublicAccessSecurityGroup
+          IpProtocol: "tcp"
+          FromPort: !Ref pApiPort
+          ToPort: !Ref pApiPort
+      SecurityGroupEgress: # Allow outbound (egress) traffic
+        - Description: "HTTPS Engress security group for API instances"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "443"
+          ToPort: "443"
+        - Description: "HTTP Engress security group for API instances"
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-sg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rApiSecurityGroupParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: API layer security group
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api-sg
+      Type: String
+      Value: !Ref rApiSecurityGroup
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rApiListenerPortParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: API listener port
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api-port
+      Type: String
+      Value: !Ref pApiPort
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rDbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for RDS database"
+      VpcId: !Ref rVpc
+      SecurityGroupIngress:
+        - Description: "Ingress security group for RDS database instances"
+          SourceSecurityGroupId: !Ref rApiSecurityGroup
+          IpProtocol: "tcp"
+          FromPort: !Ref pDatabasePort
+          ToPort: !Ref pDatabasePort
+      SecurityGroupEgress: # Allow outbound (egress) traffic
+        - Description: "Egress security group for RDS database instances"
+          DestinationSecurityGroupId: !Ref rApiSecurityGroup
+          IpProtocol: "tcp"
+          FromPort: !Ref pDatabasePort
+          ToPort: !Ref pDatabasePort
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-db-sg
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rDbSecurityGroupParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Database security group
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/db-sg
+      Type: String
+      Value: !Ref rDbSecurityGroup
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}a"
+      CidrBlock: !Ref pPublicSubnetACidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-subnet-a
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPublicSubnetAParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Public Subnet AZ A
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-a
+      Type: String
+      Value: !Ref rPublicSubnetA
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-subnet-a
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}b"
+      CidrBlock: !Ref pPublicSubnetBCidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-subnet-b
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPublicSubnetBParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Public Subnet AZ B
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-b
+      Type: String
+      Value: !Ref rPublicSubnetB
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-subnet-b
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}a"
+      CidrBlock: !Ref pPrivateSubnetACidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-a
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPrivateSubnetAParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Private subnet A
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a
+      Type: String
+      Value: !Ref rPrivateSubnetA
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-a
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateSubnetACidrParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Private subnet A CIDR
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a-cidr
+      Type: String
+      Value: !Ref pPrivateSubnetACidr
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-a-cidr
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}b"
+      CidrBlock: !Ref pPrivateSubnetBCidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-b
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPrivateSubnetBParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Private subnet B
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b
+      Type: String
+      Value: !Ref rPrivateSubnetB
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-b
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateSubnetBCidrParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Private subnet B CIDR
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b-cidr
+      Type: String
+      Value: !Ref pPrivateSubnetBCidr
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-subnet-b-cidr
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rDataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}a"
+      CidrBlock: !Ref pPataSubnetACidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-a
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rDataSubnetAParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Data subnet A
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/data-subnet-a
+      Type: String
+      Value: !Ref rDataSubnetA
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-a
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rDataSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}b"
+      CidrBlock: !Ref pDataSubnetBCidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-b
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rDataSubnetBParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Data subnet B
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/data-subnet-b
+      Type: String
+      Value: !Ref rDataSubnetB
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-b
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rDataSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub "${AWS::Region}c"
+      CidrBlock: !Ref pDataSubnetCCidr
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-c
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rDataSubnetCParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Data subnet C
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/data-subnet-c
+      Type: String
+      Value: !Ref rDataSubnetC
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-data-subnet-c
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-igw
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rInternetGatewayParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: InternetGateway
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/igw
+      Type: String
+      Value: !GetAtt rInternetGateway.InternetGatewayId
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-igw
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rVPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref rInternetGateway
+      VpcId: !Ref rVpc
+
+  rNATGatewayAEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-natgw-a-eip
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rNatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt rNATGatewayAEIP.AllocationId
+      SubnetId: !Ref rPublicSubnetA
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-natgw-a
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rNatGatewayAParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: NAT Gateway in AZ a
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/natgw-a
+      Type: String
+      Value: !Ref rNatGatewayA
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-natgw-a
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-rt
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPublicRouteTableParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Route table for public subnets
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/public-rt
+      Type: String
+      Value: !Ref rPublicRouteTable
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-public-rt
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      SubnetId: !Ref rPublicSubnetA
+
+  rPublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      SubnetId: !Ref rPublicSubnetB
+
+  rPrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-rt-a
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPrivateRouteTableAParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Route table for private subnets
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-rt-a
+      Type: String
+      Value: !Ref rPrivateRouteTableA
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Availability
+          Value: !Ref pAvailability
+        - Key: Confidentiality
+          Value: !Ref pConfidentiality
+        - Key: Customer
+          Value: !Ref pCustomer
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Integrity
+          Value: !Ref pIntegrity
+        - Key: Layer
+          Value: !Ref pLayer
+        - Key: Name
+          Value: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-private-rt-b
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Version
+          Value: !Ref pVersion
+
+  rPrivateRouteTableBParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Route table for private subnets
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/private-rt-b
+      Type: String
+      Value: !Ref rPrivateRouteTableB
+      Tags:
+        Availability: !Ref pAvailability
+        Confidentiality: !Ref pConfidentiality
+        Customer: !Ref pCustomer
+        Environment: !Ref pEnvironment
+        Integrity: !Ref pIntegrity
+        Layer: !Ref pLayer
+        Owner: !Ref pOwner
+        Project: !Ref pProject
+        Version: !Ref pVersion
+
+  rPrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTableA
+      SubnetId: !Ref rPrivateSubnetA
+
+  rPrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTableB
+      SubnetId: !Ref rPrivateSubnetB
+
+  rPrivateSubnetARoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref rNatGatewayA
+      RouteTableId: !Ref rPrivateRouteTableA
+
+  rPrivateSubnetBRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref rNatGatewayA
+      RouteTableId: !Ref rPrivateRouteTableB
+
+  rPublicSubnetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref rInternetGateway
+      RouteTableId: !Ref rPublicRouteTable
+###############################################################################
+#
+#   OUTPUTS
+#
+################################################################################
+Outputs:
+  VPC:
+    Description: The VPC Id
+    Value: !Ref rVpc
+  PrivateSubnetA:
+    Description: Private Subnet A
+    Value: !Ref rPrivateSubnetA
+  PrivateSubnetB:
+    Description: Private Subnet B
+    Value: !Ref rPrivateSubnetB
+  PublicSubnetA:
+    Description: Public Subnet A
+    Value: !Ref rPublicSubnetA
+  PublicSubnetB:
+    Description: Public Subnet B
+    Value: !Ref rPublicSubnetB
+  DataSubnetA:
+    Description: Data Subnet A
+    Value: !Ref rDataSubnetA
+  DataSubnetB:
+    Description: Data Subnet B
+    Value: !Ref rDataSubnetB

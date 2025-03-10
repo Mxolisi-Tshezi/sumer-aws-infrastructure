@@ -1,0 +1,445 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  This AWS CloudFormation template creates an ECS cluster with a load balancer,
+  target group, necessary IAM roles, and, Service and task definition for Microservices
+###############################################################################################
+#
+#   PARAMETERS
+#
+###############################################################################################
+Parameters:
+  pProject:
+    Type: String
+    Description: Identify projects that the resource supports. It consists of a
+      client and an offering tag.
+    AllowedValues:
+      - sumer
+
+  pLayer:
+    Type: String
+    Default: network
+    Description: Identify a specific application layer of the resources
+    AllowedValues:
+      - api
+      - database
+      - network
+      - pipeline
+      - presentation
+
+  pNamePrefix:
+    Type: String
+    Description: A prefix to be added to the names of resources created by this template.
+    AllowedValues:
+      - sumer
+
+  pEnvironment:
+    Type: String
+    Description: Environment type (dev, test, prod, beta)
+    AllowedValues:
+      - sbx
+      - dev
+      - qa
+      - beta
+      - prod
+
+  pContainerPort:
+    Type: Number
+    Description: The port number on the container to reserve e.g (80)
+
+  pHealthCheckPath:
+    Type: String
+    Description: The health check endpoint path from the application
+    Default: /health
+
+  pCpuSize:
+    Type: Number
+    Description: The cpu size
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+
+  pMemorySize:
+    Type: Number
+    Description: The memory size
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+
+  pAlbTimeout:
+    Type: String
+    Description: The timeout of the loadbalancer in seconds (e.g 30)
+    AllowedValues:
+      - 15
+      - 30
+      - 45
+      - 60
+
+  pEnableHTTPS:
+    Type: String
+    Description: Enable HTTPS listener with a certificate
+    AllowedValues:
+      - true
+      - false
+    Default: false
+
+  pUnhealthyThresholdCount:
+    Type: Number
+    Description: the time in seconds for unhealthy threshold count
+    Default: 2
+
+  pHealthCheckTimeoutSeconds:
+    Type: Number
+    Description: the time in seconds for health check timeout in secounds
+    Default: 5
+
+  pHealthyThresholdCount:
+    Type: Number
+    Description: the time in seconds for unhealthy threshold count
+    Default: 5
+
+  pHealthCheckIntervalSeconds:
+    Type: Number
+    Description: The Health check time interval in seconds
+    Default: 15
+
+  pPath:
+    Type: String
+    Description: What IAM Path would you like to associate with your Role?
+    AllowedPattern: (^\/$)|(^\/.*\/$)
+    Default: /
+
+  pImageRepository:
+    Type: String
+    Description: The URI of the ECR repository containing the container image
+    Default: "891612572995.dkr.ecr.us-east-1.amazonaws.com/simpleapi-repo"
+
+  pImageTag:
+    Type: String
+    Description: The tag of the container image to use
+    Default: "latest"
+
+###############################################################################################
+#
+#   METADATA
+#
+###############################################################################################
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Operations
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pLayer
+          - pNamePrefix
+          - pRegion
+    ParameterLabels:
+      pEnvironment:
+        default: Environment
+      pLayer:
+        default: Layer
+      pNamePrefix:
+        default: Name Prefix
+      pProject:
+        default: Project Name
+      pRegion:
+        default: AWS Region
+
+  ###############################################################################################
+  #
+  #   Conditions
+  #
+  ###############################################################################################
+
+  Conditions:
+    UseHTTPS: !Equals [!Ref pEnableHTTPS, "true"]
+
+###############################################################################################
+#
+#   RESOURCES
+#
+###############################################################################################
+
+Resources:
+  rComputeTaskExecutionPolicy:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+
+  rECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecr.amazonaws.com
+                - ecs.amazonaws.com
+                - codebuild.amazonaws.com
+                - codepipeline.amazonaws.com
+                - s3.amazonaws.com
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonElasticContainerRegistryPublicFullAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Path: !Ref pPath
+      RoleName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-ecs-role
+
+  rApiEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-apiecscluster
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Layer
+          Value: !Ref pLayer
+
+  rApiEcsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-apidefinition
+      ContainerDefinitions:
+        - Name: container
+          Image: !Sub "${pImageRepository}:${pImageTag}"
+
+          Cpu: !Ref pCpuSize
+          PortMappings:
+            - ContainerPort: !Ref pContainerPort
+              HostPort: !Ref pContainerPort
+              Protocol: tcp
+              Name: container-80-tcp
+              AppProtocol: http
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-group: !Sub /ecs/${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-apidefinition
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: Host
+              Value: docker
+      ExecutionRoleArn: !GetAtt rECSRole.Arn
+      TaskRoleArn: !GetAtt rECSRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref pCpuSize
+      Memory: !Ref pMemorySize
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Layer
+          Value: !Ref pLayer
+
+  rApiLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-a}}"
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-b}}"
+      SecurityGroups:
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-sg}}"
+      Scheme: internet-facing
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Layer
+          Value: !Ref pLayer
+
+  rApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-tg
+      VpcId: !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/vpc}}"
+      Port: !Ref pContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: !Ref pContainerPort
+      HealthCheckPath: !Ref pHealthCheckPath
+      HealthCheckIntervalSeconds: !Ref pHealthCheckIntervalSeconds
+      HealthCheckTimeoutSeconds: !Ref pHealthCheckTimeoutSeconds
+      HealthyThresholdCount: !Ref pHealthyThresholdCount
+      UnhealthyThresholdCount: !Ref pUnhealthyThresholdCount
+      Matcher:
+        HttpCode: 200-499
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Layer
+          Value: !Ref pLayer
+
+  # rApiListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     DefaultActions:
+  #       - Type: redirect
+  #         RedirectConfig:
+  #           StatusCode: HTTP_301
+  #           Protocol: HTTPS
+  #           Port: "443"
+  #           Host: "#{host}"
+  #     LoadBalancerArn: !Ref rApiLoadBalancer
+  #     Port: 80
+  #     Protocol: HTTP
+
+  # Use standard HTTP listener
+  rApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref rApiTargetGroup # Forward traffic directly if HTTPS is disabled
+          # Conditional redirect only if HTTPS is enabled
+      LoadBalancerArn: !Ref rApiLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  rApiEcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref rApiEcsCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref rApiEcsTaskDefinition
+      ServiceName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-apiservice
+      SchedulingStrategy: REPLICA
+      DesiredCount: 1 # put as a parameter
+      LoadBalancers:
+        - ContainerName: container
+          ContainerPort: !Ref pContainerPort
+          LoadBalancerName: !Ref AWS::NoValue
+          TargetGroupArn: !Ref rApiTargetGroup
+      HealthCheckGracePeriodSeconds: "20"
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api-sg}}"
+          Subnets:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a}}"
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b}}"
+            # - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/data-subnet-a}}"
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      DeploymentController:
+        Type: ECS
+      ServiceConnectConfiguration:
+        Enabled: false
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Layer
+          Value: !Ref pLayer
+
+      EnableECSManagedTags: true
+    DependsOn: rApiListener
+
+  ###############################################################################################
+  #
+  #   SSM Parameters
+  #
+  ###############################################################################################
+  rSSMAPICluster:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The name of the cluster for the web api
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api/cluster
+      Type: String
+      Value: !Ref rApiEcsCluster
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+
+  rSSMAPIService:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The name of the service for the web api in the ecs cluster
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api/service
+      Type: String
+      Value: !Ref rApiEcsService
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+###############################################################################################
+#
+#   OUTPUT
+#
+###############################################################################################
+
+Outputs:
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref rApiEcsCluster
+    Export:
+      Name: WebECSClusterName
+
+  TaskDefinitionName:
+    Description: The name of the ECS task definition
+    Value: !Ref rApiEcsTaskDefinition
+    Export:
+      Name: apiECSTaskDefinitionName
+
+  ServiceName:
+    Description: The name of the ECS service
+    Value: !Ref rApiEcsService
+    Export:
+      Name: apiECSServiceName

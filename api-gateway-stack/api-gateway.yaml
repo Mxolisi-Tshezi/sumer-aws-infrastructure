@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  This AWS CloudFormation template creates an API Gateway that connects to the existing ECS application
+  through the Application Load Balancer, providing a managed API endpoint.
+
+###############################################################################################
+#
+#   PARAMETERS
+#
+###############################################################################################
+Parameters:
+  pProject:
+    Type: String
+    Description: Identify projects that the resource supports.
+    Default: sumer
+    AllowedValues:
+      - sumer
+
+  pLayer:
+    Type: String
+    Default: apigateway
+    Description: Identify a specific application layer of the resources
+    AllowedValues:
+      - apigateway
+
+  pNamePrefix:
+    Type: String
+    Default: sumer
+    Description: A prefix to be added to the names of resources created by this template.
+    AllowedValues:
+      - sumer
+
+  pEnvironment:
+    Type: String
+    Description: Environment type (dev, test, prod, beta)
+    AllowedValues:
+      - sbx
+      - dev
+      - qa
+      - uat
+      - prod
+
+  pPath:
+    Type: String
+    Description: What IAM Path would you like to associate with your Role?
+    AllowedPattern: (^\/$)|(^\/.*\/$)
+    Default: /
+    
+  pStageName:
+    Type: String
+    Description: The stage name for the API Gateway deployment (e.g., v1, prod, dev)
+    Default: v1
+    
+  pApiName:
+    Type: String 
+    Description: The name of the API in API Gateway
+    Default: microservice-api
+    
+  pLoadBalancerDNS:
+    Type: String
+    Default: sumer--rApiL-WtvhxmzPyX48-697901529.us-east-1.elb.amazonaws.com
+    Description: The DNS name of the Application Load Balancer (e.g., my-alb-1234567890.us-east-1.elb.amazonaws.com)
+
+###############################################################################################
+#
+#   RESOURCES
+#
+###############################################################################################
+
+Resources:
+  # IAM Role for API Gateway to access the ALB
+  rApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Path: !Ref pPath
+      RoleName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-apigw-role
+      Policies:
+        - PolicyName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-apigateway-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeListeners
+                Resource: "*"
+
+  # Create the REST API
+  rApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pApiName}
+      Description: !Sub API Gateway for ${pNamePrefix}-${pProject}-${pEnvironment} application
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Layer
+          Value: !Ref pLayer
+
+  # Create a resource for API paths (root resource is created by default)
+  rApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref rApiGateway
+      ParentId: !GetAtt rApiGateway.RootResourceId
+      PathPart: '{proxy+}'  # This creates a greedy path variable to capture all paths
+
+  # Create a method for the resource (ANY method to capture all HTTP methods)
+  rApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref rApiGateway
+      ResourceId: !Ref rApiResource
+      HttpMethod: ANY
+      AuthorizationType: NONE  # Change to appropriate authorization if required
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub http://${pLoadBalancerDNS}/{proxy}
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestParameters:
+          integration.request.path.proxy: method.request.path.proxy
+      RequestParameters:
+        method.request.path.proxy: true
+
+  # Add a method for the root resource to handle requests to the base path
+  rApiRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref rApiGateway
+      ResourceId: !GetAtt rApiGateway.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE  # Change to appropriate authorization if required
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub http://${pLoadBalancerDNS}/
+        PassthroughBehavior: WHEN_NO_MATCH
+
+  # Create a deployment to make the API accessible
+  rApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - rApiMethod
+      - rApiRootMethod
+    Properties:
+      RestApiId: !Ref rApiGateway
+      Description: "Initial deployment"
+      
+  # Create a separate stage resource - without any logging configuration
+  rApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref rApiDeployment
+      RestApiId: !Ref rApiGateway
+      StageName: !Ref pStageName
+
+  # Create a usage plan (optional)
+  rApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: rApiStage
+    Properties:
+      ApiStages:
+        - ApiId: !Ref rApiGateway
+          Stage: !Ref pStageName
+      Description: !Sub Usage plan for ${pNamePrefix}-${pProject}-${pEnvironment} API
+      UsagePlanName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-usage-plan
+
+  ###############################################################################################
+  #
+  #   SSM Parameters
+  #
+  ###############################################################################################
+  rSSMAPIGatewayURL:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The URL of the API Gateway endpoint
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api/gateway-url
+      Type: String
+      Value: !Sub https://${rApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${pStageName}/
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+
+###############################################################################################
+#
+#   OUTPUT
+#
+###############################################################################################
+
+Outputs:
+  ApiGatewayId:
+    Description: The ID of the API Gateway API
+    Value: !Ref rApiGateway
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-gateway-id
+  
+  ApiGatewayURL:
+    Description: The URL of the API Gateway endpoint
+    Value: !Sub https://${rApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${pStageName}/
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-gateway-url
