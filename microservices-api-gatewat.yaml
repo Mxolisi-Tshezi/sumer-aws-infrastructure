@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: |
-  This AWS CloudFormation template creates an API Gateway that connects to the existing ECS application
-  through the Application Load Balancer, providing a managed API endpoint.
+  This AWS CloudFormation template creates an API Gateway that connects to a single ALB
+  which routes to multiple microservices based on path patterns.
 
 ###############################################################################################
 #
@@ -54,7 +54,7 @@ Parameters:
   pApiName:
     Type: String 
     Description: The name of the API in API Gateway
-    Default: microservice-api
+    Default: microservices-api
 
 ###############################################################################################
 #
@@ -76,6 +76,8 @@ Resources:
             Action: sts:AssumeRole
       Path: !Ref pPath
       RoleName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-apigw-role
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
       Policies:
         - PolicyName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-apigateway-policy
           PolicyDocument:
@@ -95,7 +97,7 @@ Resources:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pApiName}
-      Description: !Sub API Gateway for ${pNamePrefix}-${pProject}-${pEnvironment} application
+      Description: !Sub API Gateway for ${pNamePrefix}-${pProject}-${pEnvironment} microservices
       EndpointConfiguration:
         Types:
           - REGIONAL
@@ -128,8 +130,10 @@ Resources:
       Integration:
         Type: HTTP_PROXY
         IntegrationHttpMethod: ANY
-        Uri: !Sub http://{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api/loadbalancer-dns}}/{proxy}
+        Uri: !Sub http://{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/microservices/loadbalancer-dns}}/{proxy}
         PassthroughBehavior: WHEN_NO_MATCH
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref rVpcLink
         RequestParameters:
           integration.request.path.proxy: method.request.path.proxy
       RequestParameters:
@@ -146,8 +150,19 @@ Resources:
       Integration:
         Type: HTTP_PROXY
         IntegrationHttpMethod: ANY
-        Uri: !Sub http://{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api/loadbalancer-dns}}/
+        Uri: !Sub http://{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/microservices/loadbalancer-dns}}/
         PassthroughBehavior: WHEN_NO_MATCH
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref rVpcLink
+
+  # Create a VPC Link to connect API Gateway to the ALB in your VPC
+  rVpcLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-vpc-link
+      Description: VPC Link to connect API Gateway to the Application Load Balancer
+      TargetArns:
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/microservices/loadbalancer-arn}}"
 
   # Create a deployment to make the API accessible
   rApiDeployment:
@@ -157,17 +172,23 @@ Resources:
       - rApiRootMethod
     Properties:
       RestApiId: !Ref rApiGateway
-      Description: "Initial deployment"
+      Description: "Initial deployment for microservices API"
       
-  # Create a separate stage resource - without any logging configuration
+  # Create a separate stage resource
   rApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       DeploymentId: !Ref rApiDeployment
       RestApiId: !Ref rApiGateway
       StageName: !Ref pStageName
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          MetricsEnabled: true
+          DataTraceEnabled: true
+          LoggingLevel: INFO
 
-  # Create a usage plan (optional)
+  # Create a usage plan
   rApiUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
     DependsOn: rApiStage
@@ -175,8 +196,34 @@ Resources:
       ApiStages:
         - ApiId: !Ref rApiGateway
           Stage: !Ref pStageName
-      Description: !Sub Usage plan for ${pNamePrefix}-${pProject}-${pEnvironment} API
+      Description: !Sub Usage plan for ${pNamePrefix}-${pProject}-${pEnvironment} microservices API
       UsagePlanName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-usage-plan
+      Quota:
+        Limit: 5000
+        Period: MONTH
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+
+  # Add API Key for API Gateway
+  rApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: rApiDeployment
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-key
+      Description: API Key for microservices API
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref rApiGateway
+          StageName: !Ref pStageName
+
+  # Associate API Key with the Usage Plan
+  rUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref rApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref rApiUsagePlan
 
   ###############################################################################################
   #
@@ -190,6 +237,19 @@ Resources:
       Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api/gateway-url
       Type: String
       Value: !Sub https://${rApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${pStageName}/
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+
+  rSSMAPIKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The API Key for the API Gateway
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/api/gateway-key
+      Type: String
+      Value: !Ref rApiKey
       Tags:
         Environment: !Ref pEnvironment
         Project: !Ref pProject
@@ -214,3 +274,15 @@ Outputs:
     Value: !Sub https://${rApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${pStageName}/
     Export:
       Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-gateway-url
+      
+  ApiKeyId:
+    Description: The ID of the API Key
+    Value: !Ref rApiKey
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-api-key-id
+
+  VpcLinkId:
+    Description: The ID of the VPC Link
+    Value: !Ref rVpcLink
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-vpc-link-id

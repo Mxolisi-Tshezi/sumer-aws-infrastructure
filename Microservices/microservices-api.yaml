@@ -1,0 +1,653 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  This AWS CloudFormation template creates multiple ECS services for different microservices,
+  using a single Application Load Balancer with path-based routing.
+
+###############################################################################################
+#
+#   PARAMETERS
+#
+###############################################################################################
+Parameters:
+  pProject:
+    Type: String
+    Description: Identify projects that the resource supports.
+    AllowedValues:
+      - sumer
+
+  pLayer:
+    Type: String
+    Default: api
+    Description: Identify a specific application layer of the resources
+    AllowedValues:
+      - api
+      - database
+      - network
+      - pipeline
+      - presentation
+
+  pNamePrefix:
+    Type: String
+    Description: A prefix to be added to the names of resources created by this template.
+    AllowedValues:
+      - sumer
+
+  pEnvironment:
+    Type: String
+    Description: Environment type (dev, test, prod, beta)
+    AllowedValues:
+      - sbx
+      - dev
+      - qa
+      - beta
+      - prod
+
+  pContainerPort:
+    Type: Number
+    Description: The port number on the container to reserve e.g (80)
+    Default: 80
+
+  pHealthCheckPath:
+    Type: String
+    Description: The health check endpoint path from the application
+    Default: /health
+
+  pCpuSize:
+    Type: Number
+    Description: The cpu size
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+    Default: 512
+
+  pMemorySize:
+    Type: Number
+    Description: The memory size
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+    Default: 1024
+
+  pPath:
+    Type: String
+    Description: What IAM Path would you like to associate with your Role?
+    AllowedPattern: (^\/$)|(^\/.*\/$)
+    Default: /
+
+###############################################################################################
+#
+#   RESOURCES
+#
+###############################################################################################
+
+Resources:
+  # Common ECS Cluster for all microservices
+  rEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-${pLayer}-microservices-cluster
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Layer
+          Value: !Ref pLayer
+
+  # IAM Role for ECS tasks
+  rECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecr.amazonaws.com
+                - ecs.amazonaws.com
+                - codebuild.amazonaws.com
+                - codepipeline.amazonaws.com
+                - s3.amazonaws.com
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+                - ssm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonElasticContainerRegistryPublicFullAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Path: !Ref pPath
+      RoleName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-ecs-role
+
+  ###############################################################################################
+  #
+  #   SINGLE APPLICATION LOAD BALANCER
+  #
+  ###############################################################################################
+
+  # Common Application Load Balancer for all microservices
+  rCommonLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-microservices-alb
+      Subnets:
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-a}}"
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-subnet-b}}"
+      SecurityGroups:
+        - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/public-sg}}"
+      Scheme: internet-facing
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Layer
+          Value: !Ref pLayer
+
+  # Default listener for HTTP
+  rDefaultListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: application/json
+            MessageBody: '{"message": "Welcome to the microservices API. Please use a specific service path."}'
+            StatusCode: 200
+      LoadBalancerArn: !Ref rCommonLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Store Load Balancer DNS in SSM
+  rSSMLoadBalancerDNS:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The DNS name of the Microservices Load Balancer
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/microservices/loadbalancer-dns
+      Type: String
+      Value: !GetAtt rCommonLoadBalancer.DNSName
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+
+  ###############################################################################################
+  #
+  #   LOAD BALANCER Paramater : Store Load Balancer ARN in SSM (required for VPC Link)
+  #
+  ###############################################################################################
+
+  rSSMLoadBalancerARN:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: The ARN of the Microservices Load Balancer
+      Name: !Sub /${pNamePrefix}/${pProject}/${pEnvironment}/microservices/loadbalancer-arn
+      Type: String
+      Value: !Ref rCommonLoadBalancer
+      Tags:
+        Environment: !Ref pEnvironment
+        Project: !Ref pProject
+        Layer: !Ref pLayer
+        NamePrefix: !Ref pNamePrefix
+
+  ###############################################################################################
+  #
+  #   MICROSERVICE 1: Users Service
+  #
+  ###############################################################################################
+
+  # Task Definition for Users Service
+  rUsersTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-users-service
+      ContainerDefinitions:
+        - Name: users-container
+          Image: !Sub "${pNamePrefix}/${pProject}/users-service:latest"
+          Cpu: !Ref pCpuSize
+          PortMappings:
+            - ContainerPort: !Ref pContainerPort
+              HostPort: !Ref pContainerPort
+              Protocol: tcp
+              Name: users-80-tcp
+              AppProtocol: http
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-group: !Sub /ecs/${pNamePrefix}-${pProject}-${pEnvironment}-users-service
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: SERVICE_NAME
+              Value: users-service
+      ExecutionRoleArn: !GetAtt rECSRole.Arn
+      TaskRoleArn: !GetAtt rECSRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref pCpuSize
+      Memory: !Ref pMemorySize
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: users-service
+
+  # Target Group for Users Service
+  rUsersTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-users-tg
+      VpcId: !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/vpc}}"
+      Port: !Ref pContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: !Ref pContainerPort
+      HealthCheckPath: !Ref pHealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200-499
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Service
+          Value: users-service
+
+  # Listener Rule for Users Service - Path-based routing
+  rUsersListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref rUsersTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /users*
+      ListenerArn: !Ref rDefaultListener
+      Priority: 10
+
+  # ECS Service for Users Service
+  rUsersService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref rEcsCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref rUsersTaskDefinition
+      ServiceName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-users-service
+      SchedulingStrategy: REPLICA
+      DesiredCount: 2
+      LoadBalancers:
+        - ContainerName: users-container
+          ContainerPort: !Ref pContainerPort
+          TargetGroupArn: !Ref rUsersTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api-sg}}"
+          Subnets:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a}}"
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b}}"
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableECSManagedTags: true
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: users-service
+    DependsOn: rUsersListenerRule
+
+  ###############################################################################################
+  #
+  #   MICROSERVICE 2: Orders Service
+  #
+  ###############################################################################################
+
+  # Task Definition for Orders Service
+  rOrdersTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-orders-service
+      ContainerDefinitions:
+        - Name: orders-container
+          Image: !Sub "${pNamePrefix}/${pProject}/orders-service:latest"
+          Cpu: !Ref pCpuSize
+          PortMappings:
+            - ContainerPort: !Ref pContainerPort
+              HostPort: !Ref pContainerPort
+              Protocol: tcp
+              Name: orders-80-tcp
+              AppProtocol: http
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-group: !Sub /ecs/${pNamePrefix}-${pProject}-${pEnvironment}-orders-service
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: SERVICE_NAME
+              Value: orders-service
+      ExecutionRoleArn: !GetAtt rECSRole.Arn
+      TaskRoleArn: !GetAtt rECSRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref pCpuSize
+      Memory: !Ref pMemorySize
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: orders-service
+
+  # Target Group for Orders Service
+  rOrdersTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-orders-tg
+      VpcId: !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/vpc}}"
+      Port: !Ref pContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: !Ref pContainerPort
+      HealthCheckPath: !Ref pHealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200-499
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Service
+          Value: orders-service
+
+  # Listener Rule for Orders Service - Path-based routing
+  rOrdersListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref rOrdersTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /orders*
+      ListenerArn: !Ref rDefaultListener
+      Priority: 20
+
+  # ECS Service for Orders Service
+  rOrdersService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref rEcsCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref rOrdersTaskDefinition
+      ServiceName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-orders-service
+      SchedulingStrategy: REPLICA
+      DesiredCount: 2
+      LoadBalancers:
+        - ContainerName: orders-container
+          ContainerPort: !Ref pContainerPort
+          TargetGroupArn: !Ref rOrdersTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api-sg}}"
+          Subnets:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a}}"
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b}}"
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableECSManagedTags: true
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: orders-service
+    DependsOn: rOrdersListenerRule
+
+  ###############################################################################################
+  #
+  #   MICROSERVICE 3: Products Service
+  #
+  ###############################################################################################
+
+  # Task Definition for Products Service
+  rProductsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-products-service
+      ContainerDefinitions:
+        - Name: products-container
+          Image: !Sub "${pNamePrefix}/${pProject}/products-service:latest"
+          Cpu: !Ref pCpuSize
+          PortMappings:
+            - ContainerPort: !Ref pContainerPort
+              HostPort: !Ref pContainerPort
+              Protocol: tcp
+              Name: products-80-tcp
+              AppProtocol: http
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-group: !Sub /ecs/${pNamePrefix}-${pProject}-${pEnvironment}-products-service
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: SERVICE_NAME
+              Value: products-service
+      ExecutionRoleArn: !GetAtt rECSRole.Arn
+      TaskRoleArn: !GetAtt rECSRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref pCpuSize
+      Memory: !Ref pMemorySize
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: products-service
+
+  # Target Group for Products Service
+  rProductsTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-products-tg
+      VpcId: !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/vpc}}"
+      Port: !Ref pContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: !Ref pContainerPort
+      HealthCheckPath: !Ref pHealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200-499
+      Tags:
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Service
+          Value: products-service
+
+  # Listener Rule for Products Service - Path-based routing
+  rProductsListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref rProductsTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /products*
+      ListenerArn: !Ref rDefaultListener
+      Priority: 30
+
+  # ECS Service for Products Service
+  rProductsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref rEcsCluster
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+      TaskDefinition: !Ref rProductsTaskDefinition
+      ServiceName: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-products-service
+      SchedulingStrategy: REPLICA
+      DesiredCount: 2
+      LoadBalancers:
+        - ContainerName: products-container
+          ContainerPort: !Ref pContainerPort
+          TargetGroupArn: !Ref rProductsTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/api-sg}}"
+          Subnets:
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-a}}"
+            - !Sub "{{resolve:ssm:/${pNamePrefix}/${pProject}/${pEnvironment}/private-subnet-b}}"
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableECSManagedTags: true
+      Tags:
+        - Key: NamePrefix
+          Value: !Ref pNamePrefix
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Service
+          Value: products-service
+    DependsOn: rProductsListenerRule
+
+###############################################################################################
+#
+#   OUTPUT
+#
+###############################################################################################
+
+Outputs:
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref rEcsCluster
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-microservices-cluster-name
+
+  LoadBalancerDNS:
+    Description: The DNS name of the common Application Load Balancer
+    Value: !GetAtt rCommonLoadBalancer.DNSName
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-microservices-loadbalancer-dns
+
+  UsersServiceEndpoint:
+    Description: The URL endpoint for the Users service
+    Value: !Sub http://${rCommonLoadBalancer.DNSName}/users
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-users-service-endpoint
+
+  OrdersServiceEndpoint:
+    Description: The URL endpoint for the Orders service
+    Value: !Sub http://${rCommonLoadBalancer.DNSName}/orders
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-orders-service-endpoint
+
+  ProductsServiceEndpoint:
+    Description: The URL endpoint for the Products service
+    Value: !Sub http://${rCommonLoadBalancer.DNSName}/products
+    Export:
+      Name: !Sub ${pNamePrefix}-${pProject}-${pEnvironment}-products-service-endpoint
